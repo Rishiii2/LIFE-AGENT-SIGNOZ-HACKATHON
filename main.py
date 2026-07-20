@@ -69,11 +69,11 @@ async def lifespan(app: FastAPI):
             res.raise_for_status()
             data = res.json()
             if data.get("ok"):
-                print(f"✅ Telegram token valid for @{data['result']['username']}")
+                print(f"Success: Telegram token valid for @{data['result']['username']}")
             else:
-                print(f"❌ Telegram getMe failed: {data.get('description')}")
+                print(f"Error: Telegram getMe failed: {data.get('description')}")
         except Exception as e:
-            print(f"❌ Telegram API Error on startup: {e}")
+            print(f"Error: Telegram API Error on startup: {e}")
             
     yield
     
