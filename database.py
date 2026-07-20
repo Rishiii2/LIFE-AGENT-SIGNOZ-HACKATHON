@@ -9,6 +9,10 @@ class PlayerState(SQLModel, table=True):
     xp: int = Field(default=0)
     level: int = Field(default=1)
 
+class ProcessedUpdate(SQLModel, table=True):
+    update_id: int = Field(primary_key=True)
+    processed_at: str = Field(default="N/A")
+
 sqlite_file_name = "database.db"
 sqlite_url = f"sqlite:///{sqlite_file_name}"
 
