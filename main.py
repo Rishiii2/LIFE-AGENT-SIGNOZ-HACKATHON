@@ -1,4 +1,8 @@
 import os
+import httpx
+from dotenv import load_dotenv
+load_dotenv()
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Depends
 from pydantic import BaseModel
