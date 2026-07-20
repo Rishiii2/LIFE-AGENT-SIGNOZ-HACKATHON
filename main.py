@@ -137,9 +137,28 @@ async def telegram_webhook(request: Request, session: Session = Depends(get_sess
         # Internally trigger the action processing
         report = ActionReport(message=message, telegram_id=chat_id)
         
-        # For a full implementation, you'd want to use httpx to send a reply via the Telegram API here.
-        # But for the hackathon MVP, we process the state synchronously.
+        # Process the action
         result = await report_action(report, session)
+        
+        # Send a reply back to Telegram
+        bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        if bot_token:
+            changes = result["changes"]
+            new_state = result["new_state"]
+            
+            reply_text = (
+                f"🎲 **The DM has ruled!**\\n"
+                f"Action: {result['extracted']['activity'].replace('_', ' ').title()}\\n"
+                f"Changes: XP {changes['xp_delta']:+d} | HP {changes['hp_delta']:+d} | Mana {changes['mana_delta']:+d}\\n\\n"
+                f"❤️ HP: {new_state['hp']}\\n"
+                f"💧 Mana: {new_state['mana']}\\n"
+                f"🌟 XP: {new_state['xp']}"
+            )
+            
+            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+            async with httpx.AsyncClient() as client:
+                await client.post(url, json={"chat_id": chat_id, "text": reply_text, "parse_mode": "Markdown"})
+                
         return {"status": "processed", "result": result}
         
     return {"status": "ignored"}
