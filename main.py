@@ -285,4 +285,4 @@ async def telegram_webhook(request: Request, session: Session = Depends(get_sess
         return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="::", port=8000)
+    uvicorn.run(app, host="::", port=8888)
