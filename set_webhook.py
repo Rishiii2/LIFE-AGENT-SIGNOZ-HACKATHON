@@ -44,7 +44,7 @@ try:
     if data.get("ok") is not True:
         raise RuntimeError(data.get("description", "Webhook registration failed"))
         
-    print("✅ Webhook registered successfully!")
+    print("Success: Webhook registered successfully!")
 except Exception as e:
-    print(f"❌ Failed to set webhook: {e}")
+    print(f"Error: Failed to set webhook: {e}")
     sys.exit(1)
