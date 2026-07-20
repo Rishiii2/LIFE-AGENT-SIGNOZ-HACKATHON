@@ -1,11 +1,12 @@
 import os
-import random
-from datetime import datetime
-from fastapi import FastAPI, Request
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Depends
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 import uvicorn
-import httpx
+
+from sqlmodel import Session, select
+from database import create_db_and_tables, engine, PlayerState, get_session
 
 from opentelemetry import trace, metrics
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
@@ -35,41 +36,23 @@ metrics.set_meter_provider(meter_provider)
 tracer = trace.get_tracer("liferpg.tracer")
 meter = metrics.get_meter("liferpg.meter")
 
-# Define Metrics
-player_hp_gauge = meter.create_observable_gauge("liferpg.player.hp", description="Current HP")
-player_mana_gauge = meter.create_observable_gauge("liferpg.player.mana", description="Current Mana")
-player_xp_gauge = meter.create_observable_gauge("liferpg.player.xp", description="Current XP")
+# Define Custom OTel Metrics
+event_counter = meter.create_counter("liferpg.events.total", description="Total events processed")
+quests_completed = meter.create_counter("liferpg.quests.completed", description="Total quests completed")
+override_counter = meter.create_counter("liferpg.dm.overrides", description="Times a DM decision was appealed")
 
-# In-memory state for demo purposes (ideally use SQLite)
-player_state = {
-    "hp": 100,
-    "mana": 100,
-    "xp": 0,
-    "level": 1
-}
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    create_db_and_tables()
+    yield
 
-def get_hp_callback(options):
-    yield metrics.Observation(player_state["hp"], {})
-
-def get_mana_callback(options):
-    yield metrics.Observation(player_state["mana"], {})
-
-def get_xp_callback(options):
-    yield metrics.Observation(player_state["xp"], {})
-
-meter.register_callback([get_hp_callback], player_hp_gauge)
-meter.register_callback([get_mana_callback], player_mana_gauge)
-meter.register_callback([get_xp_callback], player_xp_gauge)
-
-app = FastAPI(title="LifeRPG API")
-
-@app.on_event("startup")
-def startup_event():
-    FastAPIInstrumentor.instrument_app(app)
-    RequestsInstrumentor().instrument()
+app = FastAPI(title="LifeRPG API", lifespan=lifespan)
+FastAPIInstrumentor.instrument_app(app)
+RequestsInstrumentor().instrument()
 
 class ActionReport(BaseModel):
     message: str
+    telegram_id: str
 
 def mock_llm_extract(message: str) -> dict:
     """Mock LLM extraction since API key is missing."""
@@ -96,9 +79,20 @@ def evaluate_rules(extracted_data: dict) -> dict:
     
     return {"xp_delta": 5, "mana_delta": 0, "hp_delta": 0, "ruleset": "2026.07.1"}
 
+def get_or_create_player(session: Session, telegram_id: str) -> PlayerState:
+    player = session.exec(select(PlayerState).where(PlayerState.telegram_id == telegram_id)).first()
+    if not player:
+        player = PlayerState(telegram_id=telegram_id)
+        session.add(player)
+        session.commit()
+        session.refresh(player)
+    return player
+
 @app.post("/action")
-async def report_action(action: ActionReport):
-    with tracer.start_as_current_span("telegram.update.process"):
+async def report_action(action: ActionReport, session: Session = Depends(get_session)):
+    with tracer.start_as_current_span("telegram.update.process") as root_span:
+        root_span.set_attribute("player.telegram_id", action.telegram_id)
+        event_counter.add(1)
         
         # 1. LLM Extraction
         with tracer.start_as_current_span("gen_ai.activity_extract") as span:
@@ -116,16 +110,39 @@ async def report_action(action: ActionReport):
 
         # 3. State Commit
         with tracer.start_as_current_span("state.commit"):
-            player_state["xp"] += changes["xp_delta"]
-            player_state["mana"] += changes["mana_delta"]
-            player_state["hp"] += changes["hp_delta"]
+            player = get_or_create_player(session, action.telegram_id)
+            player.xp += changes["xp_delta"]
+            player.mana += changes["mana_delta"]
+            player.hp += changes["hp_delta"]
+            session.add(player)
+            session.commit()
+            session.refresh(player)
             
         return {
             "status": "success",
             "extracted": extracted,
             "changes": changes,
-            "new_state": player_state
+            "new_state": player.model_dump()
         }
+
+@app.post("/webhook")
+async def telegram_webhook(request: Request, session: Session = Depends(get_session)):
+    """Webhook endpoint for Telegram."""
+    update = await request.json()
+    
+    if "message" in update and "text" in update["message"]:
+        message = update["message"]["text"]
+        chat_id = str(update["message"]["chat"]["id"])
+        
+        # Internally trigger the action processing
+        report = ActionReport(message=message, telegram_id=chat_id)
+        
+        # For a full implementation, you'd want to use httpx to send a reply via the Telegram API here.
+        # But for the hackathon MVP, we process the state synchronously.
+        result = await report_action(report, session)
+        return {"status": "processed", "result": result}
+        
+    return {"status": "ignored"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
